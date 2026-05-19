@@ -128,19 +128,19 @@ class SparseConv3d(nn.Module):
         )
         if bias:
             self.bias = mx.zeros((out_channels,), dtype=mx.float32)
-        else:
-            self.bias = None
+        # else: don't create the attribute — MLX would treat None as a missing param.
 
     def __call__(self, x: SparseTensor) -> SparseTensor:
         Kd, Kh, Kw = self.kernel_size
         K = Kd * Kh * Kw
+        bias = getattr(self, "bias", None)
 
         # Fast path for 1x1x1: behaves like a Linear.
         if Kd == Kh == Kw == 1:
             w = self.weight.reshape(self.out_channels, self.in_channels)
             out = x.feats @ w.T
-            if self.bias is not None:
-                out = out + self.bias
+            if bias is not None:
+                out = out + bias
             return x.replace(out)
 
         cache_key = f"submconv_nbr_{Kd}x{Kh}x{Kw}_d{self.dilation}"
@@ -163,8 +163,8 @@ class SparseConv3d(nn.Module):
         w_flat = self.weight.reshape(self.out_channels, K * self.in_channels)
         g_flat = gathered.reshape(N, K * self.in_channels)
         out = g_flat @ w_flat.T
-        if self.bias is not None:
-            out = out + self.bias
+        if bias is not None:
+            out = out + bias
         return x.replace(out)
 
 

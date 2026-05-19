@@ -97,12 +97,10 @@ class SparseStructureFlowModel(nn.Module):
             ape = AbsolutePositionEmbedder(model_channels, 3)
             grid = np.stack(np.meshgrid(*[np.arange(resolution)] * 3, indexing="ij"), axis=-1).reshape(-1, 3)
             self.pos_emb = ape(mx.array(grid, dtype=mx.float32))  # [R^3, C]
-            self.rope_phases = None
         elif pe_mode == "rope":
             rope = RotaryPositionEmbedder(model_channels // self.num_heads, 3, rope_freq)
             grid = np.stack(np.meshgrid(*[np.arange(resolution)] * 3, indexing="ij"), axis=-1).reshape(-1, 3)
             self.rope_phases = rope(mx.array(grid, dtype=mx.float32))
-            self.pos_emb = None
         else:
             raise ValueError(pe_mode)
 
@@ -140,8 +138,9 @@ class SparseStructureFlowModel(nn.Module):
         t_emb = t_emb.astype(self.compute_dtype)
         h = h.astype(self.compute_dtype)
         cond = cond.astype(self.compute_dtype)
+        rope_phases = getattr(self, "rope_phases", None)
         for blk in self.blocks:
-            h = blk(h, t_emb, cond, self.rope_phases)
+            h = blk(h, t_emb, cond, rope_phases)
         h = h.astype(x.dtype)
         # final fp32 layer-norm (no params)
         from ..modules.norm import _layer_norm_fp32

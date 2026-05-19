@@ -73,13 +73,10 @@ class SparseResBlock3d(nn.Module):
             )
             self._skip_kind = "linear" if channels != self.out_channels else "identity"
         elif resample_mode == "spatial2channel" and downsample:
-            self.skip_connection = None
-            self._skip_kind = "s2c_skip"
+            self._skip_kind = "s2c_skip"  # parameterless lambda — no module attribute
         elif resample_mode == "spatial2channel" and not downsample:
-            self.skip_connection = None
             self._skip_kind = "c2s_skip"
 
-        self.updown = None
         if downsample:
             self.updown = SparseDownsample(2) if resample_mode == "nearest" else SparseSpatial2Channel(2)
         elif upsample:
@@ -90,7 +87,7 @@ class SparseResBlock3d(nn.Module):
         if self._skip_kind == "identity":
             return x
         if self._skip_kind == "linear":
-            return self.skip_connection(x)
+            return self.skip_connection(x)  # type: ignore[attr-defined]
         if self._skip_kind == "s2c_skip":
             # mean over groups of 8 (3D s2c packing): C * 8 / out -> out
             n = x.feats.shape[0]
@@ -105,9 +102,9 @@ class SparseResBlock3d(nn.Module):
 
     def _updown(self, x: SparseTensor, subdiv: Optional[SparseTensor] = None) -> SparseTensor:
         if self.downsample:
-            return self.updown(x)
+            return self.updown(x)  # type: ignore[attr-defined]
         if self.upsample:
-            return self.updown(x, subdiv.replace(subdiv.feats > 0))
+            return self.updown(x, subdiv.replace(subdiv.feats > 0))  # type: ignore[attr-defined]
         return x
 
     def __call__(self, x: SparseTensor):

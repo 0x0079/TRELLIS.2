@@ -61,8 +61,6 @@ class SLatFlowModel(nn.Module):
 
         if pe_mode == "ape":
             self.pos_embedder = AbsolutePositionEmbedder(model_channels)
-        else:
-            self.pos_embedder = None
 
         self.input_layer = SparseLinear(in_channels, model_channels)
         self.blocks = [

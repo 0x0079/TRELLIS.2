@@ -13,7 +13,13 @@ import mlx.nn as nn
 
 
 class AbsolutePositionEmbedder(nn.Module):
-    """Sin/cos absolute position embedder over D dims (D channel-aligned)."""
+    """Sin/cos absolute position embedder over D dims (D channel-aligned).
+
+    Note: `_freqs` is named with a leading underscore so that MLX does NOT track
+    it as a learnable parameter (matches the reference where torch's `self.freqs`
+    is a regular Python attribute, not a Parameter/buffer, so it is absent from
+    the safetensors checkpoint).
+    """
 
     def __init__(self, channels: int, in_channels: int = 3):
         super().__init__()
@@ -21,10 +27,10 @@ class AbsolutePositionEmbedder(nn.Module):
         self.in_channels = in_channels
         self.freq_dim = channels // in_channels // 2
         freqs = mx.arange(self.freq_dim, dtype=mx.float32) / max(1, self.freq_dim)
-        self.freqs = 1.0 / (10000.0 ** freqs)
+        self._freqs = 1.0 / (10000.0 ** freqs)
 
     def _sin_cos(self, x: mx.array) -> mx.array:
-        out = x[:, None] * self.freqs[None, :]
+        out = x[:, None] * self._freqs[None, :]
         return mx.concatenate([mx.sin(out), mx.cos(out)], axis=-1)
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -51,11 +57,12 @@ class RotaryPositionEmbedder(nn.Module):
         self.rope_freq = rope_freq
         self.freq_dim = head_dim // 2 // dim
         freqs = mx.arange(self.freq_dim, dtype=mx.float32) / max(1, self.freq_dim)
-        self.freqs = rope_freq[0] / (rope_freq[1] ** freqs)
+        # Private (underscore) attribute: see AbsolutePositionEmbedder._freqs note.
+        self._freqs = rope_freq[0] / (rope_freq[1] ** freqs)
 
     def _get_phases_complex(self, indices: mx.array) -> mx.array:
         """Returns [..., freq_dim, 2] with (cos, sin)."""
-        phi = indices.reshape(-1).astype(mx.float32)[:, None] * self.freqs[None, :]
+        phi = indices.reshape(-1).astype(mx.float32)[:, None] * self._freqs[None, :]
         return mx.stack([mx.cos(phi), mx.sin(phi)], axis=-1)
 
     def __call__(self, indices: mx.array) -> mx.array:
