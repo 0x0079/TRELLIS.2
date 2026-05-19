@@ -6,7 +6,7 @@ modules/sparse/attention/modules.py.
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -19,6 +19,7 @@ from ..ops.sparse_attention import (
 )
 from .linear import SparseLinear
 from .norm import LayerNorm32
+from .transformer_blocks import _NoParamModule, _silu_module, _gelu_tanh_module
 
 
 class SparseMultiHeadRMSNorm(nn.Module):
@@ -101,18 +102,17 @@ class SparseMultiHeadAttention(nn.Module):
 
     def _fused_pre(self, x, num_fused: int):
         if isinstance(x, VarLenTensor):
-            x_feats = x.feats[None]  # add batch axis for reshape
+            x_feats = x.feats[None]
             x_feats = x_feats.reshape(*x_feats.shape[:2], num_fused, self.num_heads, -1)
             return x.replace(x_feats.squeeze(0) if x_feats.shape[0] == 1 else x_feats)
         return x.reshape(*x.shape[:2], num_fused, self.num_heads, -1)
 
     def __call__(self, x: SparseTensor, context: Optional[Union[VarLenTensor, mx.array]] = None) -> SparseTensor:
         if self._type == "self":
-            qkv = _linear_apply(self.to_qkv, x)  # VarLen[T, 3*C]
-            qkv = self._fused_pre(qkv, num_fused=3)  # VarLen[T, 3, H, C]
+            qkv = _linear_apply(self.to_qkv, x)
+            qkv = self._fused_pre(qkv, num_fused=3)
 
             if self.qk_rms_norm or self.use_rope:
-                # split along the fused-3 axis
                 q = qkv.replace(qkv.feats[:, 0])
                 k = qkv.replace(qkv.feats[:, 1])
                 v = qkv.replace(qkv.feats[:, 2])
@@ -130,7 +130,6 @@ class SparseMultiHeadAttention(nn.Module):
                     qkv, self.window_size, shift_window=self.shift_window or (0, 0, 0)
                 )
             elif self.attn_mode == "double_windowed":
-                # Two halves of heads run with different shift_window strategies.
                 qkv0 = qkv.replace(qkv.feats[:, :, self.num_heads // 2:])
                 qkv1 = qkv.replace(qkv.feats[:, :, : self.num_heads // 2])
                 h0 = sparse_windowed_scaled_dot_product_self_attention(
@@ -149,10 +148,7 @@ class SparseMultiHeadAttention(nn.Module):
                 q = self.q_rms_norm(q)
                 k = kv.replace(kv.feats[:, 0]) if isinstance(kv, VarLenTensor) else kv[:, :, 0]
                 v = kv.replace(kv.feats[:, 1]) if isinstance(kv, VarLenTensor) else kv[:, :, 1]
-                if isinstance(k, VarLenTensor):
-                    k = self.k_rms_norm(k)
-                else:
-                    k = self.k_rms_norm(k)
+                k = self.k_rms_norm(k)
                 h = sparse_scaled_dot_product_attention(q, k, v)
             else:
                 h = sparse_scaled_dot_product_attention(q, kv)
@@ -162,16 +158,21 @@ class SparseMultiHeadAttention(nn.Module):
 
 
 class SparseFeedForwardNet(nn.Module):
+    """Sparse FFN matching nn.Sequential(SparseLinear, GELU(tanh), SparseLinear)."""
     def __init__(self, channels: int, mlp_ratio: float = 4.0):
         super().__init__()
         hidden = int(channels * mlp_ratio)
-        self.mlp_0 = SparseLinear(channels, hidden)
-        self.mlp_2 = SparseLinear(hidden, channels)
+        self.mlp: List[nn.Module] = [
+            SparseLinear(channels, hidden),
+            _gelu_tanh_module(),
+            SparseLinear(hidden, channels),
+        ]
 
     def __call__(self, x: VarLenTensor) -> VarLenTensor:
-        h = self.mlp_0(x)
-        h = h.replace(nn.gelu_approx(h.feats))
-        return self.mlp_2(h)
+        h = self.mlp[0](x)
+        # _NoParamModule wraps a Python callable applied to feats
+        h = h.replace(self.mlp[1]._fn(h.feats))
+        return self.mlp[2](h)
 
 
 class ModulatedSparseTransformerCrossBlock(nn.Module):
@@ -209,8 +210,10 @@ class ModulatedSparseTransformerCrossBlock(nn.Module):
         )
         self.mlp = SparseFeedForwardNet(channels, mlp_ratio)
         if not share_mod:
-            self.adaLN_modulation_0 = nn.SiLU()
-            self.adaLN_modulation_1 = nn.Linear(channels, 6 * channels, bias=True)
+            self.adaLN_modulation: List[nn.Module] = [
+                _silu_module(),
+                nn.Linear(channels, 6 * channels, bias=True),
+            ]
         else:
             self.modulation = mx.zeros((6 * channels,), dtype=mx.float32)
 
@@ -218,7 +221,7 @@ class ModulatedSparseTransformerCrossBlock(nn.Module):
         if self.share_mod:
             m = (self.modulation + mod).astype(mod.dtype)
         else:
-            m = self.adaLN_modulation_1(self.adaLN_modulation_0(mod))
+            m = self.adaLN_modulation[1](self.adaLN_modulation[0](mod))
         return mx.split(m, 6, axis=1)
 
     def __call__(self, x: SparseTensor, mod: mx.array, context) -> SparseTensor:

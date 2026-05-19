@@ -3,10 +3,14 @@ Dense Transformer blocks for MLX.
 
 Mirrors trellis2/modules/transformer/blocks.py + modulated.py and
 trellis2/modules/attention/modules.py (MultiHeadAttention).
+
+Parameter naming convention: where the reference uses nn.Sequential we use a
+plain Python list attribute. MLX exposes list children as `<attr>.0`, `<attr>.1`,
+... matching the safetensors keys produced by torch.
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -14,6 +18,26 @@ import mlx.nn as nn
 from ..ops.attention import scaled_dot_product_attention
 from ..ops.rope import RotaryPositionEmbedder
 from .norm import LayerNorm32
+
+
+class _NoParamModule(nn.Module):
+    """Lightweight module placeholder for Sequential slots that have no params
+    (SiLU / GELU) — keeps the list indices aligned with the reference."""
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    def __call__(self, x):
+        return self._fn(x)
+
+
+def _silu_module():
+    return _NoParamModule(nn.silu)
+
+
+def _gelu_tanh_module():
+    return _NoParamModule(nn.gelu_approx)
 
 
 class MultiHeadRMSNorm(nn.Module):
@@ -25,7 +49,6 @@ class MultiHeadRMSNorm(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
         in_dtype = x.dtype
         xf = x.astype(mx.float32)
-        # F.normalize over last dim: x / ||x||
         norm = mx.rsqrt(mx.sum(xf * xf, axis=-1, keepdims=True) + 1e-12)
         return (xf * norm * self.gamma * self.scale).astype(in_dtype)
 
@@ -109,24 +132,28 @@ class MultiHeadAttention(nn.Module):
 
 
 class FeedForwardNet(nn.Module):
+    """
+    Matches `nn.Sequential(Linear, GELU(approximate='tanh'), Linear)` in the
+    reference. Stored as a Python list so MLX produces param keys `mlp.0.*`,
+    `mlp.2.*` matching the safetensors checkpoint.
+    """
     def __init__(self, channels: int, mlp_ratio: float = 4.0):
         super().__init__()
         hidden = int(channels * mlp_ratio)
-        # The reference uses nn.Sequential containing [Linear, GELU(tanh), Linear].
-        # We replicate the parameter layout (`mlp.0`, `mlp.2`) explicitly.
-        self.mlp_0 = nn.Linear(channels, hidden)
-        self.mlp_2 = nn.Linear(hidden, channels)
+        self.mlp: List[nn.Module] = [
+            nn.Linear(channels, hidden),
+            _gelu_tanh_module(),
+            nn.Linear(hidden, channels),
+        ]
 
     def __call__(self, x: mx.array) -> mx.array:
-        h = self.mlp_0(x)
-        h = nn.gelu_approx(h)
-        return self.mlp_2(h)
+        return self.mlp[2](self.mlp[1](self.mlp[0](x)))
 
 
 class ModulatedTransformerCrossBlock(nn.Module):
     """
     Cross-attention DiT block: norm1->self_attn->add, norm2->cross_attn->add,
-    norm3->mlp->add. AdaLN modulation injected on norm1 and norm3 (gate/scale/shift).
+    norm3->mlp->add. AdaLN modulation injected on norm1 and norm3.
     """
 
     def __init__(
@@ -159,8 +186,12 @@ class ModulatedTransformerCrossBlock(nn.Module):
         )
         self.mlp = FeedForwardNet(channels, mlp_ratio)
         if not share_mod:
-            self.adaLN_modulation_0 = nn.SiLU()
-            self.adaLN_modulation_1 = nn.Linear(channels, 6 * channels, bias=True)
+            # nn.Sequential(SiLU, Linear) — SiLU has no params, so keys appear as
+            # adaLN_modulation.1.{weight,bias} in the checkpoint.
+            self.adaLN_modulation: List[nn.Module] = [
+                _silu_module(),
+                nn.Linear(channels, 6 * channels, bias=True),
+            ]
         else:
             self.modulation = mx.zeros((6 * channels,), dtype=mx.float32)
 
@@ -168,7 +199,7 @@ class ModulatedTransformerCrossBlock(nn.Module):
         if self.share_mod:
             m = (self.modulation + mod).astype(mod.dtype)
         else:
-            m = self.adaLN_modulation_1(self.adaLN_modulation_0(mod))
+            m = self.adaLN_modulation[1](self.adaLN_modulation[0](mod))
         return mx.split(m, 6, axis=1)
 
     def __call__(

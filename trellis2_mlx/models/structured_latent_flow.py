@@ -53,8 +53,11 @@ class SLatFlowModel(nn.Module):
 
         self.t_embedder = TimestepEmbedder(model_channels)
         if share_mod:
-            self.adaLN_modulation_0 = nn.SiLU()
-            self.adaLN_modulation_1 = nn.Linear(model_channels, 6 * model_channels, bias=True)
+            from ..modules.transformer_blocks import _silu_module
+            self.adaLN_modulation = [
+                _silu_module(),
+                nn.Linear(model_channels, 6 * model_channels, bias=True),
+            ]
 
         if pe_mode == "ape":
             self.pos_embedder = AbsolutePositionEmbedder(model_channels)
@@ -91,7 +94,7 @@ class SLatFlowModel(nn.Module):
         h = h.astype(self.compute_dtype)
         t_emb = self.t_embedder(t)
         if self.share_mod:
-            t_emb = self.adaLN_modulation_1(self.adaLN_modulation_0(t_emb))
+            t_emb = self.adaLN_modulation[1](self.adaLN_modulation[0](t_emb))
         t_emb = t_emb.astype(self.compute_dtype)
         if isinstance(cond, VarLenTensor):
             cond = cond.astype(self.compute_dtype)

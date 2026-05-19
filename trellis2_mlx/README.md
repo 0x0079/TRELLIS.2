@@ -264,6 +264,40 @@ That's expected — the MLX path currently supports `'512'` only. Cascade
 adds the `shape_slat_decoder.upsample()` path and the 1024 flow model,
 which are scaffolded but not yet validated end-to-end.
 
+### Diagnosing weight-load failures
+
+The pipeline prints a side-by-side diff before each load if the MLX module
+parameter tree doesn't match the checkpoint exactly:
+
+```
+[trellis2_mlx] checkpoint <-> model key mismatch for 'SparseStructureDecoder':
+=== 4 key(s) in checkpoint but NOT in MLX model ===
+  + out_layer.0.bias
+  + out_layer.0.weight
+  + out_layer.2.bias
+  + out_layer.2.weight
+=== 4 key(s) in MLX model but NOT in checkpoint ===
+  - out_norm.bias
+  - out_norm.weight
+  - out_conv.bias
+  - out_conv.weight
+```
+
+To inspect a checkpoint yourself (useful when reporting a mismatch):
+
+```bash
+python -m trellis2_mlx.io.weight_convert --inspect microsoft/TRELLIS.2-4B/ckpts/<model_name>
+# or for a cross-repo reference:
+python -m trellis2_mlx.io.weight_convert --inspect microsoft/TRELLIS-image-large/ckpts/ss_dec_conv3d_16l8_fp16
+# config only:
+python -m trellis2_mlx.io.weight_convert --inspect <prefix> --config-only
+# first 30 keys only:
+python -m trellis2_mlx.io.weight_convert --inspect <prefix> --head 30
+```
+
+Output is `(key_name, shape, dtype)` per tensor plus a `(dense conv3d, will permute)`
+marker on weights the loader will reshape.
+
 ### Output mesh is broken / has holes
 The MLX path **does not** call `Mesh.fill_holes()` (which needs CuMesh).
 Open-surface artifacts that the reference pipeline fixes post-hoc will

@@ -264,15 +264,20 @@ class SparseConvNeXtBlock3d(nn.Module):
         self.norm = LayerNorm32(channels, elementwise_affine=True, eps=1e-6)
         self.conv = SparseConv3d(channels, channels, 3)
         hidden = int(channels * mlp_ratio)
-        # Match the reference `mlp` Sequential: [Linear, SiLU, Linear]; param names `mlp.0`, `mlp.2`.
-        self.mlp_0 = nn.Linear(channels, hidden)
-        self.mlp_2 = nn.Linear(hidden, channels)
+        # Reference: self.mlp = nn.Sequential(Linear, SiLU, Linear)
+        # Use a list attribute so MLX exposes keys mlp.0/mlp.2 matching the checkpoint.
+        from .transformer_blocks import _silu_module
+        self.mlp = [
+            nn.Linear(channels, hidden),
+            _silu_module(),
+            nn.Linear(hidden, channels),
+        ]
 
     def __call__(self, x: SparseTensor) -> SparseTensor:
         h = self.conv(x)
         h = h.replace(self.norm(h.feats))
-        f = self.mlp_0(h.feats)
-        f = nn.silu(f)
-        f = self.mlp_2(f)
+        f = self.mlp[0](h.feats)
+        f = self.mlp[1]._fn(f)
+        f = self.mlp[2](f)
         h = h.replace(f)
         return h + x

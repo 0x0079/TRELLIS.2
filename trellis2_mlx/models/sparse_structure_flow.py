@@ -26,9 +26,13 @@ class TimestepEmbedder(nn.Module):
     def __init__(self, hidden_size: int, frequency_embedding_size: int = 256):
         super().__init__()
         self.frequency_embedding_size = frequency_embedding_size
-        # nn.Sequential(Linear, SiLU, Linear): flatten to mlp_0 / mlp_2 in MLX.
-        self.mlp_0 = nn.Linear(frequency_embedding_size, hidden_size, bias=True)
-        self.mlp_2 = nn.Linear(hidden_size, hidden_size, bias=True)
+        # Reference: self.mlp = nn.Sequential(Linear, SiLU, Linear)
+        from ..modules.transformer_blocks import _silu_module
+        self.mlp = [
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            _silu_module(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        ]
 
     @staticmethod
     def timestep_embedding(t: mx.array, dim: int, max_period: int = 10000) -> mx.array:
@@ -44,9 +48,9 @@ class TimestepEmbedder(nn.Module):
 
     def __call__(self, t: mx.array) -> mx.array:
         emb = self.timestep_embedding(t, self.frequency_embedding_size)
-        emb = self.mlp_0(emb)
-        emb = nn.silu(emb)
-        return self.mlp_2(emb)
+        emb = self.mlp[0](emb)
+        emb = self.mlp[1]._fn(emb)
+        return self.mlp[2](emb)
 
 
 class SparseStructureFlowModel(nn.Module):
@@ -83,8 +87,11 @@ class SparseStructureFlowModel(nn.Module):
 
         self.t_embedder = TimestepEmbedder(model_channels)
         if share_mod:
-            self.adaLN_modulation_0 = nn.SiLU()
-            self.adaLN_modulation_1 = nn.Linear(model_channels, 6 * model_channels, bias=True)
+            from ..modules.transformer_blocks import _silu_module
+            self.adaLN_modulation = [
+                _silu_module(),
+                nn.Linear(model_channels, 6 * model_channels, bias=True),
+            ]
 
         if pe_mode == "ape":
             ape = AbsolutePositionEmbedder(model_channels, 3)
@@ -129,7 +136,7 @@ class SparseStructureFlowModel(nn.Module):
             h = h + self.pos_emb[None]
         t_emb = self.t_embedder(t)
         if self.share_mod:
-            t_emb = self.adaLN_modulation_1(self.adaLN_modulation_0(t_emb))
+            t_emb = self.adaLN_modulation[1](self.adaLN_modulation[0](t_emb))
         t_emb = t_emb.astype(self.compute_dtype)
         h = h.astype(self.compute_dtype)
         cond = cond.astype(self.compute_dtype)

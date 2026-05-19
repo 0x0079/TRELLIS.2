@@ -144,8 +144,13 @@ class SparseStructureEncoder(_BaseSparseStructureVAE):
         self.middle_block = [ResBlock3d(channels[-1], channels[-1], norm_type=norm_type)
                              for _ in range(num_res_blocks_middle)]
 
-        self.out_norm = _norm(norm_type, channels[-1])
-        self.out_conv = nn.Conv3d(channels[-1], latent_channels * 2, kernel_size=3, padding=1)
+        # Reference: out_layer = nn.Sequential(norm, SiLU, Conv3d) -> keys out_layer.0/2
+        from ..modules.transformer_blocks import _silu_module
+        self.out_layer = [
+            _norm(norm_type, channels[-1]),
+            _silu_module(),
+            nn.Conv3d(channels[-1], latent_channels * 2, kernel_size=3, padding=1),
+        ]
 
     def __call__(self, x: mx.array, sample_posterior: bool = False) -> mx.array:
         h = self._to_channel_last(x)
@@ -154,9 +159,9 @@ class SparseStructureEncoder(_BaseSparseStructureVAE):
             h = blk(h)
         for blk in self.middle_block:
             h = blk(h)
-        h = self.out_norm(h)
-        h = nn.silu(h)
-        h = self.out_conv(h)
+        h = self.out_layer[0](h)
+        h = self.out_layer[1]._fn(h)
+        h = self.out_layer[2](h)
         h = self._to_channel_first(h)
         mean, logvar = mx.split(h, 2, axis=1)
         if sample_posterior:
@@ -193,8 +198,12 @@ class SparseStructureDecoder(_BaseSparseStructureVAE):
                 blocks.append(UpsampleBlock3d(ch, channels[i + 1]))
         self.blocks = blocks
 
-        self.out_norm = _norm(norm_type, channels[-1])
-        self.out_conv = nn.Conv3d(channels[-1], out_channels, kernel_size=3, padding=1)
+        from ..modules.transformer_blocks import _silu_module
+        self.out_layer = [
+            _norm(norm_type, channels[-1]),
+            _silu_module(),
+            nn.Conv3d(channels[-1], out_channels, kernel_size=3, padding=1),
+        ]
 
     def __call__(self, x: mx.array) -> mx.array:
         h = self._to_channel_last(x)
@@ -203,7 +212,7 @@ class SparseStructureDecoder(_BaseSparseStructureVAE):
             h = blk(h)
         for blk in self.blocks:
             h = blk(h)
-        h = self.out_norm(h)
-        h = nn.silu(h)
-        h = self.out_conv(h)
+        h = self.out_layer[0](h)
+        h = self.out_layer[1]._fn(h)
+        h = self.out_layer[2](h)
         return self._to_channel_first(h)

@@ -12,8 +12,7 @@ import mlx.nn as nn
 from ..ops.sparse_tensor import VarLenTensor
 
 
-def _layer_norm_fp32(x: mx.array, normalized_shape, weight: Optional[mx.array],
-                     bias: Optional[mx.array], eps: float) -> mx.array:
+def _layer_norm_fp32(x: mx.array, normalized_shape, weight, bias, eps: float) -> mx.array:
     in_dtype = x.dtype
     xf = x.astype(mx.float32)
     axes = tuple(range(-len(normalized_shape), 0))
@@ -37,17 +36,18 @@ class LayerNorm32(nn.Module):
         self.normalized_shape = tuple(normalized_shape)
         self.eps = eps
         self.elementwise_affine = elementwise_affine
+        # Only create params when affine — otherwise omit the attributes entirely
+        # so the safetensors checkpoint (which also lacks them) matches cleanly.
         if elementwise_affine:
             self.weight = mx.ones(self.normalized_shape, dtype=mx.float32)
             self.bias = mx.zeros(self.normalized_shape, dtype=mx.float32)
-        else:
-            self.weight = None
-            self.bias = None
 
     def __call__(self, x):
+        weight = getattr(self, "weight", None)
+        bias = getattr(self, "bias", None)
         if isinstance(x, VarLenTensor):
-            return x.replace(_layer_norm_fp32(x.feats, self.normalized_shape, self.weight, self.bias, self.eps))
-        return _layer_norm_fp32(x, self.normalized_shape, self.weight, self.bias, self.eps)
+            return x.replace(_layer_norm_fp32(x.feats, self.normalized_shape, weight, bias, self.eps))
+        return _layer_norm_fp32(x, self.normalized_shape, weight, bias, self.eps)
 
 
 class GroupNorm32(nn.Module):
@@ -62,14 +62,8 @@ class GroupNorm32(nn.Module):
         if affine:
             self.weight = mx.ones((num_channels,), dtype=mx.float32)
             self.bias = mx.zeros((num_channels,), dtype=mx.float32)
-        else:
-            self.weight = None
-            self.bias = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        """
-        x: [..., C] (channel-last). Groups split along C.
-        """
         in_dtype = x.dtype
         xf = x.astype(mx.float32)
         s = xf.shape
@@ -77,22 +71,16 @@ class GroupNorm32(nn.Module):
         G = self.num_groups
         assert C % G == 0
         g = xf.reshape(*s[:-1], G, C // G)
-        # normalize over (group's channels + spatial dims if any). The reference
-        # GroupNorm normalizes over (C/G, *spatial); here channel-last means the
-        # spatial dims sit before C. Match the math by reducing over the channel
-        # group axis only; spatial reduction is handled by stacking.
-        # For our use-cases x is either [N, C] (varlen) or [B, D, H, W, C] (dense
-        # decoder). In both cases reducing over all dims except batch+group gives
-        # the same result as torch.nn.GroupNorm with channel-first layout.
         reduce_axes = list(range(1, g.ndim - 1)) + [g.ndim - 1]
-        # ndim - 2 is the group axis; everything else (except batch) gets reduced.
         reduce_axes = [a for a in reduce_axes if a != g.ndim - 2]
         mean = mx.mean(g, axis=tuple(reduce_axes), keepdims=True)
         var = mx.mean((g - mean) ** 2, axis=tuple(reduce_axes), keepdims=True)
         g = (g - mean) * mx.rsqrt(var + self.eps)
         g = g.reshape(*s)
-        if self.affine and self.weight is not None:
-            g = g * self.weight + self.bias
+        weight = getattr(self, "weight", None)
+        bias = getattr(self, "bias", None)
+        if weight is not None:
+            g = g * weight + bias
         return g.astype(in_dtype)
 
 

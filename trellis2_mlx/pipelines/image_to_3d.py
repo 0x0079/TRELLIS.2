@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -41,15 +42,58 @@ def _load_model_from_local_or_hub(prefix: str) -> nn.Module:
     cfg, state = weight_convert.load_config_and_state(prefix)
     model = build_model(cfg["name"], **cfg["args"])
     mlx_state = weight_convert.convert_state_dict(state)
-    # `update` accepts a (possibly nested) dict; we feed the flat dict and let
-    # MLX's tree_unflatten do the rest.
+    items = list(mlx_state.items())
+
+    # MLX's load_weights raises a single uninformative error when there is any
+    # mismatch. Pre-compute the diff against the model's expected keys so a
+    # human can see exactly what's wrong (and we degrade gracefully via
+    # strict=False so the user can still tinker with partial loads).
     try:
-        from mlx.utils import tree_unflatten
-        model.update(tree_unflatten(list(mlx_state.items())))
-    except Exception:
-        # Fallback: load_weights expects [(name, value)]
-        model.load_weights(list(mlx_state.items()))
+        from mlx.utils import tree_flatten
+        expected = {k for k, _ in tree_flatten(model.parameters())}
+        provided = {k for k, _ in items}
+        if expected != provided:
+            _, _, msg = weight_convert.diff_keys(provided, expected)
+            print(f"[trellis2_mlx] checkpoint <-> model key mismatch for {cfg.get('name')!r}:\n{msg}",
+                  file=sys.stderr)
+    except Exception as e:
+        # Don't let diagnostics block the load.
+        print(f"[trellis2_mlx] (diag failed: {e})", file=sys.stderr)
+
+    try:
+        model.load_weights(items, strict=True)
+    except TypeError:
+        # Older MLX versions don't accept strict=.
+        model.load_weights(items)
     return model
+
+
+def _resolve_and_load(path: str, prefix: str) -> nn.Module:
+    """
+    `prefix` from pipeline.json can be either:
+      (a) a sub-path inside the pipeline repo (e.g. 'ckpts/my_model'), or
+      (b) a cross-repo HF id (e.g. 'microsoft/TRELLIS-image-large/ckpts/foo')
+          when the pipeline reuses a checkpoint from another repo.
+
+    Try (a) first; if its config is missing on the hub fall through to (b)
+    without printing the 404 noise.
+    """
+    if not os.path.exists(f"{path}/{prefix}.json"):
+        # Probe locally only when something resembling the file exists locally.
+        local_ok = os.path.exists(f"{path}/{prefix}.safetensors")
+    else:
+        local_ok = True
+    candidate_in_repo = f"{path}/{prefix}"
+    if local_ok:
+        return _load_model_from_local_or_hub(candidate_in_repo)
+    # Two paths to try, in order. Catch RemoteEntryNotFoundError quietly.
+    try:
+        return _load_model_from_local_or_hub(candidate_in_repo)
+    except Exception as e_inner:
+        msg = str(e_inner)
+        if "404" in msg or "Not Found" in msg or "RemoteEntry" in msg:
+            return _load_model_from_local_or_hub(prefix)
+        raise
 
 
 class Trellis2ImageTo3DPipelineMLX:
@@ -120,10 +164,8 @@ class Trellis2ImageTo3DPipelineMLX:
         for k, prefix in args["models"].items():
             if k not in cls.model_names_to_load:
                 continue
-            try:
-                models[k] = _load_model_from_local_or_hub(f"{path}/{prefix}")
-            except Exception:
-                models[k] = _load_model_from_local_or_hub(prefix)
+            print(f"[trellis2_mlx] loading '{k}' from '{prefix}'...")
+            models[k] = _resolve_and_load(path, prefix)
 
         ss_sampler = _samplers.from_config(args["sparse_structure_sampler"]["name"],
                                            **args["sparse_structure_sampler"]["args"])
