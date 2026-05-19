@@ -57,8 +57,12 @@ Data processing is streamlined for instant conversions that are fully **renderin
 
 An inference-only Apple MLX port lives under [`trellis2_mlx/`](trellis2_mlx/).
 It allows running image → 3D on Macs with M-series chips, trading throughput for
-portability. The migration design and trade-offs are documented in
-[`docs/MLX_MIGRATION.md`](docs/MLX_MIGRATION.md).
+portability.
+
+- **Installation, usage, and a full comparison to the HF reference pipeline:**
+  see [`trellis2_mlx/README.md`](trellis2_mlx/README.md).
+- **Architectural design and migration plan:**
+  see [`docs/MLX_MIGRATION.md`](docs/MLX_MIGRATION.md).
 
 **Status**
 
@@ -78,18 +82,15 @@ portability. The migration design and trade-offs are documented in
 **Quick start (Mac)**
 
 ```bash
-# 1) Set up
-python -m venv .venv && source .venv/bin/activate
-pip install mlx safetensors huggingface_hub trimesh pillow numpy tqdm
-# DINOv3 conditioning runs on PyTorch + MPS for now
-pip install torch torchvision transformers
-
-# 2) Run (RGBA PNG, alpha must be pre-cut)
-python example_mlx.py assets/example_image/T.png sample_mlx.glb
+bash setup_mlx.sh                                       # installs requirements-mlx.txt
+pytest trellis2_mlx/tests -v                            # smoke test (no checkpoint)
+python example_mlx.py assets/example_image/T.png out.glb
 ```
 
 Performance is expected to be ~30–100× slower than the CUDA path because the
-sparse 3D convolution runs as a Python+MLX gather/einsum (see design doc §4.3.2).
+sparse 3D convolution runs as a Python+MLX gather/einsum. Full details, sampler
+overrides, and per-stage comparisons live in
+[`trellis2_mlx/README.md`](trellis2_mlx/README.md).
 
 ## 🛠️ Installation
 

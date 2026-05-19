@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["trellis2_mlx/tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

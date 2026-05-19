@@ -1,0 +1,27 @@
+# --- Core MLX runtime ---
+# MLX 0.20+ for the SDPA / fast kernels we use. Pin loosely to allow patch upgrades.
+mlx>=0.20.0
+
+# --- Tensor / array utilities ---
+numpy>=1.24
+tqdm>=4.66
+
+# --- Model weight loading from HuggingFace ---
+safetensors>=0.4.3
+huggingface_hub>=0.24
+
+# --- Image I/O (input preprocessing) ---
+Pillow>=10.0
+
+# --- Mesh export (GLB writer with per-vertex color) ---
+trimesh>=4.0
+
+# --- Image conditioning (DINOv3 stays on PyTorch + MPS for now) ---
+# These are required only by trellis2_mlx.extractors.dinov3; you can omit them
+# if you build cond features upstream and feed them to the pipeline directly.
+torch>=2.3
+torchvision>=0.18
+transformers>=4.45
+
+# --- Development / tests ---
+pytest>=7.0
