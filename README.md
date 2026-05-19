@@ -53,6 +53,44 @@ Data processing is streamlined for instant conversions that are fully **renderin
 - [x] Release training code
 
 
+## 🍎 Apple Silicon (Experimental MLX backend)
+
+An inference-only Apple MLX port lives under [`trellis2_mlx/`](trellis2_mlx/).
+It allows running image → 3D on Macs with M-series chips, trading throughput for
+portability. The migration design and trade-offs are documented in
+[`docs/MLX_MIGRATION.md`](docs/MLX_MIGRATION.md).
+
+**Status**
+
+| Stage | MLX path |
+| :--- | :--- |
+| Stage 1 — Sparse-Structure Flow | ✅ |
+| Stage 2 — Shape SLat Flow (512) | ✅ |
+| Stage 3 — Texture SLat Flow (512) | ✅ |
+| Sparse Conv3D (FlexGEMM) | ✅ slow pure-MLX path |
+| Sparse / windowed attention | ✅ padded varlen SDPA |
+| Flexible Dual Grid → Mesh | ✅ pure Python |
+| Mesh simplify / fill-holes (CuMesh) | ⏭️ skipped |
+| nvdiffrast preview / PBR bake | ⏭️ skipped (export only) |
+| Cascade 1024 / 1536 | 🚧 planned |
+| Texturing pipeline | 🚧 planned |
+
+**Quick start (Mac)**
+
+```bash
+# 1) Set up
+python -m venv .venv && source .venv/bin/activate
+pip install mlx safetensors huggingface_hub trimesh pillow numpy tqdm
+# DINOv3 conditioning runs on PyTorch + MPS for now
+pip install torch torchvision transformers
+
+# 2) Run (RGBA PNG, alpha must be pre-cut)
+python example_mlx.py assets/example_image/T.png sample_mlx.glb
+```
+
+Performance is expected to be ~30–100× slower than the CUDA path because the
+sparse 3D convolution runs as a Python+MLX gather/einsum (see design doc §4.3.2).
+
 ## 🛠️ Installation
 
 ### Prerequisites
